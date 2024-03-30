@@ -30,16 +30,7 @@ resource "aws_internet_gateway" "gw" {
 
 data "aws_availability_zones" "available_zones" {}
 
-# private subnet
-resource "aws_subnet" "private_subnet" {
-  availability_zone = data.aws_availability_zones.available_zones.names[0]
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.4.0/24"
 
-  tags = {
-    Name = "private subnet"
-  }
-}
 
 # public subnet
 resource "aws_subnet" "public_subnet" {
@@ -62,46 +53,6 @@ resource "aws_subnet" "public_subnet_2" {
   tags = {
     Name = "public subnet 2"
   }
-}
-
-#elastic ip
-resource "aws_eip" "ip" {
-  depends_on = [aws_internet_gateway.gw]
-}
-
-#nat gateway
-resource "aws_nat_gateway" "project" {
-  allocation_id = aws_eip.ip.id
-  subnet_id     = aws_subnet.public_subnet.id
-
-  tags = {
-    Name = "gw NAT"
-  }
-
-  # To ensure proper ordering, it is recommended to add an explicit dependency
-  # on the Internet Gateway for the VPC.
-  depends_on = [aws_internet_gateway.gw]
-}
-
-#route table private
-resource "aws_route_table" "private_subnet" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_nat_gateway.project.id
-  }
-
-
-  tags = {
-    Name = "private_route"
-  }
-}
-
-#aws_route_table_association private
-resource "aws_route_table_association" "private_subnet" {
-  subnet_id      = aws_subnet.private_subnet.id
-  route_table_id = aws_route_table.private_subnet.id
 }
 
 #route table public
@@ -143,6 +94,12 @@ resource "aws_security_group" "lb_sg" {
     from_port   = "443"
     to_port     = "443"
     protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
@@ -191,52 +148,7 @@ resource "aws_lb_listener" "test" {
   }
 }
 
-# bastion security group
-resource "aws_security_group" "bastion_sg" {
-  name        = "bastion_sg"
-  description = "allow  ports 22"
-  vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description = "http proxy access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-
-data "aws_ami" "ubuntu" {
-
-  most_recent = true
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-
-  owners = ["099720109477"]
-}
-
-# bastion ec2_instance
-resource "aws_instance" "bastion" {
-  ami             = data.aws_ami.ubuntu.id
-  instance_type   = "t2.micro"
-  subnet_id       = aws_subnet.public_subnet.id
-  security_groups = [aws_security_group.bastion_sg.id]
-  key_name        = "lampstack" #change this
-
-
-  tags = {
-    Name = "bastion_server"
-  }
-}
 
 #web server ec2_instance security_groups
 resource "aws_security_group" "ec2_sg" {
@@ -255,11 +167,11 @@ resource "aws_security_group" "ec2_sg" {
 
   # allow access on port 22
   ingress {
-    description     = "ssh access"
-    from_port       = 22
-    to_port         = 22
-    protocol        = "tcp"
-    security_groups = [aws_security_group.bastion_sg.id]
+    description = "ssh access"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   ingress {
@@ -278,19 +190,97 @@ resource "aws_security_group" "ec2_sg" {
   }
 }
 
+data "aws_ami" "ubuntu" {
+
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  owners = ["099720109477"]
+}
+
 
 # web server ec2_instance
 resource "aws_instance" "ec2_instance" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_subnet.id
+  subnet_id              = aws_subnet.public_subnet.id
   vpc_security_group_ids = [aws_security_group.ec2_sg.id]
   key_name               = "lampstack" #change this
   user_data              = file("install_tomcat.sh")
-  depends_on             = [aws_nat_gateway.project]
 
   tags = {
     Name = "tomcat"
   }
-  
+}
+
+#jenkins security_groups
+resource "aws_security_group" "jenkins_sg" {
+  name        = "jenkins_sg"
+  description = "allow  ports 22"
+  vpc_id      = aws_vpc.main.id
+
+  # allow access on port 8080
+  ingress {
+    description = "http proxy access"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # allow access on port 22
+  ingress {
+    description = "ssh access"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    description = "http access"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    description = "https access"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+#jenkins server
+resource "aws_instance" "jenkins_instance" {
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.public_subnet.id
+  vpc_security_group_ids = [aws_security_group.jenkins_sg.id]
+  key_name               = "lampstack" #change this
+  user_data              = file("install_jenkins.sh")
+
+  tags = {
+    Name = "jenkins"
+  }
+}
+
+output "website_url" {
+  value     = join("", ["http://", aws_instance.jenkins_instance.public_ip, ":", "8080"])
 }
